@@ -128,31 +128,33 @@ body::before{content:'';position:fixed;top:0;left:0;width:100%;height:100%;backg
 .genko-cell.half-filled{background:#fff8f0}
 .genko-cell .half-char{font-size:clamp(7px,1.1vw,10px);line-height:1}
 .genko-hidden-input{display:none}
-.genko-cell.composing{background:#fff8e8}
-.genko-cell.composing .ime-draft{color:#999;font-size:clamp(8px,1.3vw,12px)}
 .genko-input-cell{display:none}
+.genko-editor{display:none}
 .cursor-blink::after{content:'';position:absolute;width:2px;height:55%;background:#526496;border-radius:1px;animation:cur .8s infinite}
 @keyframes cur{0%,100%{opacity:1}50%{opacity:0}}
 .genko-controls{display:flex;gap:10px;margin-top:10px;align-items:center;flex-wrap:wrap}
 .genko-counter{font-size:12px;color:#78786C;margin-left:auto;font-family:monospace}
-/* The single contenteditable editor sitting offscreen */
-.genko-editor{
-  position:fixed;
-  left:0;top:0;
-  width:60px;height:40px;
-  opacity:0;
-  font-size:16px;/* >=16px prevents iOS zoom */
+/* Textarea input sits below the grid */
+.genko-textarea-wrap{margin-top:10px}
+.genko-textarea-wrap label{font-size:12px;color:#78786C;display:block;margin-bottom:5px}
+.genko-textarea{
+  width:100%;
+  min-height:80px;
+  padding:10px 14px;
+  border:1.5px solid rgba(222,216,207,.8);
+  border-radius:1rem;
   font-family:"Noto Sans KR",sans-serif;
-  border:none;outline:none;
-  background:transparent;
-  color:transparent;
-  caret-color:transparent;
-  overflow:hidden;
-  white-space:nowrap;
-  z-index:200;
-  pointer-events:auto;
-  -webkit-user-modify:read-write-plaintext-only;
+  font-size:16px; /* must be >=16px so iOS doesn't zoom */
+  line-height:1.8;
+  resize:vertical;
+  background:#fff;
+  transition:border-color .2s;
 }
+.genko-textarea:focus{outline:none;border-color:#526496;box-shadow:0 0 0 3px rgba(82,100,150,.1)}
+.genko-cell.active{background:#e8f0fa}
+.genko-cell.filled{background:#fff}
+.genko-cell.half-filled{background:#fff8f0}
+.genko-cell .half-char{font-size:clamp(7px,1.1vw,10px);line-height:1}
 
 /* ── Modal ── */
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(44,44,36,.45);backdrop-filter:blur(5px);z-index:10000;overflow-y:auto}
@@ -428,213 +430,86 @@ function resetSortQ(qi){
 function initGenko(qi,rows){
   const COLS=20,total=rows*COLS;
   const paper=$('gp'+qi);if(!paper)return;
-  studentAnswers[qi]={cells:Array(total).fill(''),cursor:0,rows,COLS};
+  studentAnswers[qi]={cells:Array(total).fill(''),rows,COLS};
   paper.innerHTML='';
   for(let r=0;r<rows;r++){
     const row=document.createElement('div');
     row.className='genko-row'+(r===Math.floor(rows/2)-1?' section-gap':'');
     for(let c=0;c<COLS;c++){
-      const idx=r*COLS+c;
       const cell=document.createElement('div');
       cell.className='genko-cell';
-      cell.id='gc'+qi+'_'+idx;
-      cell.addEventListener('mousedown',e=>{e.preventDefault();activateGenkoCell(qi,idx);});
-      cell.addEventListener('touchend',e=>{e.preventDefault();activateGenkoCell(qi,idx);},{passive:false});
+      cell.id='gc'+qi+'_'+(r*COLS+c);
       row.appendChild(cell);
     }
     paper.appendChild(row);
   }
-  buildGenkoEditor(qi);
   renderGenko(qi);
 }
-function buildGenkoEditor(qi){
-  if(document.getElementById('ged'+qi)) return;
-  const sa=studentAnswers[qi];
-
-  const ed=document.createElement('div');
-  ed.id='ged'+qi;
-  ed.contentEditable='true';
-  ed.className='genko-editor';
-  ed.setAttribute('autocomplete','off');
-  ed.setAttribute('autocorrect','off');
-  ed.setAttribute('autocapitalize','off');
-  ed.setAttribute('spellcheck','false');
-  document.body.appendChild(ed);
-
-  // Track what was in the editor before the current input cycle
-  let snapshot='';
-  let isComposing=false;
-
-  /* ── MutationObserver: fires whenever browser changes the DOM text ── */
-  const obs=new MutationObserver(()=>{
-    if(isComposing) return; // still assembling — wait for compositionend
-    const current=ed.textContent;
-    if(current===snapshot) return; // no real change
-    // Compute added characters
-    const added=extractAdded(snapshot,current);
-    // Clear the editor
-    ed.textContent='';snapshot='';
-    // Push each added char
-    if(added) [...added].forEach(ch=>genkoPush(qi,ch));
-    renderGenko(qi);
-  });
-  obs.observe(ed,{childList:true,subtree:true,characterData:true});
-
-  ed.addEventListener('compositionstart',()=>{
-    isComposing=true;
-    snapshot=ed.textContent;
-    sa._draft='';sa._composing=true;
-  });
-
-  ed.addEventListener('compositionupdate',e=>{
-    // Show the in-progress draft in the active cell
-    sa._draft=e.data||ed.textContent||'';
-    renderGenko(qi);
-  });
-
-  ed.addEventListener('compositionend',()=>{
-    isComposing=false;
-    sa._composing=false;
-    sa._draft='';
-    // Read the fully committed text from the editor
-    const committed=ed.textContent;
-    ed.textContent='';snapshot='';
-    if(committed) [...committed].forEach(ch=>genkoPush(qi,ch));
-    renderGenko(qi);
-  });
-
-  /* keydown handles Backspace / arrows on desktop.
-     Mobile keyboard events are unreliable so we rely on DOM diff for mobile. */
-  ed.addEventListener('keydown',e=>{
-    if(isComposing) return; // IME handles its own keys
-    if(e.key==='Backspace'){
-      e.preventDefault();
-      ed.textContent='';snapshot='';
-      genkoDelete(qi);renderGenko(qi);
-    } else if(e.key==='ArrowLeft'){
-      e.preventDefault();
-      if(sa.cursor>0){sa.cursor--;renderGenko(qi);}
-    } else if(e.key==='ArrowRight'){
-      e.preventDefault();
-      const total=sa.cells.length;
-      if(sa.cursor<total-1){sa.cursor++;renderGenko(qi);}
-    } else if(e.key==='Enter'){
-      e.preventDefault();
-    }
-  });
-
-  /* On blur: commit anything still sitting in the editor */
-  ed.addEventListener('blur',()=>{
-    if(ed.textContent){
-      const v=ed.textContent;
-      ed.textContent='';snapshot='';
-      isComposing=false;sa._composing=false;sa._draft='';
-      [...v].forEach(ch=>genkoPush(qi,ch));
-      renderGenko(qi);
-    }
-  });
-}
-function extractAdded(prev,curr){
-  // If curr starts with prev: simple append
-  if(curr.startsWith(prev)) return curr.slice(prev.length);
-  // If curr ends with prev suffix: prefix added
-  // Otherwise: treat entire curr as new (IME replaced)
-  return curr;
-}
-function activateGenkoCell(qi,idx){
+function syncGenko(qi){
+  const ta=$('gta'+qi);if(!ta)return;
   const sa=studentAnswers[qi];if(!sa)return;
-  sa.cursor=idx;
-  renderGenko(qi);
-  const ed=document.getElementById('ged'+qi);
-  if(!ed)return;
-  // Place editor over the active cell so mobile keyboard anchors near it
-  const cell=document.getElementById('gc'+qi+'_'+idx);
-  if(cell){
-    const r=cell.getBoundingClientRect();
-    ed.style.left=Math.max(0,r.left)+'px';
-    ed.style.top=Math.max(0,r.top)+'px';
-    ed.style.width=r.width+'px';
-    ed.style.height=r.height+'px';
-  }
-  ed.focus({preventScroll:true});
-  // Place caret at end
-  const range=document.createRange();
-  range.selectNodeContents(ed);
-  range.collapse(false);
-  const sel=window.getSelection();
-  if(sel){sel.removeAllRanges();sel.addRange(range);}
-}
-function focusGenko(qi,idx){activateGenkoCell(qi,idx);}
-function handleGenkoKey(){}
-function genkoPush(qi,ch){
-  const sa=studentAnswers[qi];
-  if(!ch||!sa)return;
+  const raw=ta.value;
   const total=sa.cells.length,COLS=sa.COLS;
-  let pos=sa.cursor;
-  if(pos>=total)return;
 
-  const isHalf=HALF_CHARS.has(ch);
-  const isPunct=PUNCT_NO_FIRST.has(ch);
+  // Re-parse entire text into cells from scratch
+  const cells=Array(total).fill('');
+  let pos=0;
 
-  if(isHalf){
-    // Check if previous cell holds exactly one waiting half-char
-    const prev=pos>0?sa.cells[pos-1]:'';
-    if(prev.length===1&&HALF_CHARS.has(prev)){
-      sa.cells[pos-1]=prev+ch; // complete the pair in prev cell
-      // cursor stays at pos
+  for(let i=0;i<raw.length&&pos<total;i++){
+    const ch=raw[i];
+    if(ch==='\n') continue; // skip newlines
+
+    const isHalf=HALF_CHARS.has(ch);
+    const isPunct=PUNCT_NO_FIRST.has(ch);
+
+    if(isHalf){
+      // Check if previous cell has a single waiting half
+      const prev=pos>0?cells[pos-1]:'';
+      if(prev.length===1&&HALF_CHARS.has(prev)){
+        cells[pos-1]=prev+ch; // pair into prev cell
+      } else {
+        cells[pos]=ch;pos++;
+      }
+    } else if(isPunct){
+      const col=pos%COLS;
+      if(col===0&&pos>0){
+        cells[pos-1]=(cells[pos-1]||'')+ch; // squeeze to prev
+      } else {
+        cells[pos]=ch;pos++;
+      }
     } else {
-      sa.cells[pos]=ch;pos++; // first half: occupy current cell, advance
+      cells[pos]=ch;pos++;
     }
-  } else if(isPunct){
-    const col=pos%COLS;
-    if(col===0&&pos>0){
-      sa.cells[pos-1]=(sa.cells[pos-1]||'')+ch; // squeeze into prev cell
-    } else {
-      sa.cells[pos]=ch;pos++;
-    }
-  } else {
-    sa.cells[pos]=ch;pos++;
   }
-  sa.cursor=Math.min(pos,total);
+
+  sa.cells=cells;
+  renderGenko(qi);
 }
-function genkoDelete(qi){
-  const sa=studentAnswers[qi];if(!sa)return;
-  let pos=sa.cursor;
-  if(pos>0&&!sa.cells[pos]){
-    pos--;sa.cells[pos]='';sa.cursor=pos;
-  } else if(sa.cells[pos]){
-    const c=sa.cells[pos];
-    if(c.length===2&&HALF_CHARS.has(c[0])&&HALF_CHARS.has(c[1])){
-      sa.cells[pos]=c[0];
-    } else {
-      sa.cells[pos]='';sa.cursor=Math.max(0,pos);
-    }
-  } else if(pos>0){
-    pos--;sa.cells[pos]='';sa.cursor=pos;
-  }
+function getGenkoText(qi){
+  const ta=$('gta'+qi);
+  return ta?ta.value.replace(/\n/g,''):'';
 }
+function activateGenkoCell(){}
+function focusGenko(){}
+function handleGenkoKey(){}
+function buildGenkoEditor(){}
+function extractAdded(){}
+function genkoPush(){}
+function genkoDelete(){}
 function renderGenko(qi){
   const sa=studentAnswers[qi];if(!sa)return;
   const total=sa.cells.length;let count=0;
-  const draft=sa._draft||'';
-  const composing=!!sa._composing;
   for(let i=0;i<total;i++){
     const c=document.getElementById('gc'+qi+'_'+i);if(!c)continue;
     const ch=sa.cells[i]||'';
-    const isActive=(i===sa.cursor);
-    const showDraft=isActive&&composing&&draft;
     const isHalfPair=ch.length===2&&HALF_CHARS.has(ch[0])&&HALF_CHARS.has(ch[1]);
     const isSingleHalf=!isHalfPair&&ch.length===1&&HALF_CHARS.has(ch);
     const isSqueeze=ch.length>=2&&!isHalfPair;
     let cls='genko-cell';
-    if(ch) cls+=' filled';
-    if(isSingleHalf) cls+=' half-filled';
-    if(isActive) cls+=' active'+(composing?'':' cursor-blink');
-    if(isActive&&composing) cls+=' composing';
+    if(ch)cls+=' filled';
+    if(isSingleHalf)cls+=' half-filled';
     c.className=cls;
-    if(showDraft){
-      c.innerHTML='<span class="ime-draft">'+draft+'</span>';
-    } else if(isHalfPair){
+    if(isHalfPair){
       c.innerHTML='<span class="half-char">'+ch[0]+'</span><span class="half-char">'+ch[1]+'</span>';
     } else if(isSingleHalf){
       c.innerHTML='<span class="half-char" style="opacity:.5">'+ch+'</span>';
@@ -643,26 +518,14 @@ function renderGenko(qi){
     } else {
       c.textContent=ch;
     }
-    if(ch) count++;
+    if(ch)count++;
   }
-  const cnt=$('gcnt'+qi);if(cnt) cnt.textContent=count+' / '+total;
-  // Reposition editor over active cell whenever we render
-  const ed=document.getElementById('ged'+qi);
-  if(ed&&document.activeElement===ed){
-    const cell=document.getElementById('gc'+qi+'_'+sa.cursor);
-    if(cell){
-      const r=cell.getBoundingClientRect();
-      ed.style.left=Math.max(0,r.left)+'px';
-      ed.style.top=Math.max(0,r.top)+'px';
-    }
-  }
+  const cnt=$('gcnt'+qi);if(cnt)cnt.textContent=count+' / '+total;
 }
 function clearGenko(qi){
   const sa=studentAnswers[qi];if(!sa)return;
   sa.cells=sa.cells.map(()=>'');
-  sa.cursor=0;sa._draft='';sa._composing=false;
-  const ed=document.getElementById('ged'+qi);
-  if(ed) ed.textContent='';
+  const ta=$('gta'+qi);if(ta)ta.value='';
   renderGenko(qi);
 }
 function renderQBody(q,i){
@@ -712,8 +575,12 @@ function renderTopikQ(q,i,head){
       ④ 標點不可寫在格首，與前一字擠同格
     </div>
     <div class="genko-wrap">
-      <div class="genko-label">稿紙 ${q.rows} 行 × 20 格 — 點任意格開始輸入</div>
+      <div class="genko-label">稿紙預覽（${q.rows} 行 × 20 格）</div>
       <div class="genko-paper" id="gp${i}"></div>
+    </div>
+    <div class="genko-textarea-wrap">
+      <label>在這裡輸入文章 ↓（打完自動更新上方稿紙）</label>
+      <textarea class="genko-textarea" id="gta${i}" placeholder="在這裡用輸入法打韓文..." rows="4" oninput="syncGenko(${i})"></textarea>
     </div>
     <div class="genko-controls">
       <button class="btn btn-secondary" style="padding:8px 16px;font-size:13px" onclick="clearGenko(${i})">清除</button>
@@ -773,7 +640,8 @@ $('submitBtn').onclick=()=>{
     else if(q.type==='fill'){total++;isOk=q.answers.includes((ans||'').trim());correctText=q.answers.join('、');userText=ans||'（未作答）';}
     else if(q.type==='match'){total++;if(ans&&ans.pairs){const n=q.pairs.length;let ok=0;ans.pairs.forEach(p=>{const rEl=document.getElementById('mr'+i+'_'+p.r);if(!rEl)return;if(parseInt(rEl.dataset.pi)===p.l)ok++;});isOk=ok===n;correctText='配對正確 '+ok+'/'+n;userText='配對 '+ans.pairs.length+' 組';}}
     else if(q.type==='sort'){total++;isOk=ans===true;correctText=q.words.join(' ');userText=isOk?'正確':'錯誤';}
-    else if(q.type==='topik'){const sa=studentAnswers[i];const txt=sa&&sa.cells?sa.cells.filter(c=>c).join(''):'';detailLines.push('第'+(i+1)+'題(作文): '+(txt||'（未作答）'));return;}
+    else if(q.type==='topik'){const ta=document.getElementById('gta'+i);const txt=ta?ta.value.replace(/
+/g,''):'';detailLines.push('第'+(i+1)+'題(作文): '+(txt||'（未作答）'));return;}
     if(isOk)correct++;
     detailLines.push('第'+(i+1)+'題: '+(isOk?'✓':'✗')+' 答='+userText+(isOk?'':' 正確='+correctText));
     document.getElementById('qq'+i).classList.add(isOk?'correct':'incorrect');
